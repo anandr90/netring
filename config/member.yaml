@@ -1,0 +1,37 @@
+member:
+  # Datacenter/location identifier - appears in metrics labels (e.g. "us1-k8s", "eu1-docker", "asia1-k8s")
+  location: "dc1-k8s"
+  # Unique instance ID - auto-generated UUID if null
+  instance_id: null
+  
+  registry:
+    # Central registry service URL where members register and discover each other
+    url: "http://localhost:8756"
+    # Direct Redis connection (currently unused, registry handles Redis)
+    redis_host: "localhost"
+    redis_port: 6379
+    redis_db: 0
+    redis_password: null
+  
+  intervals:
+    # How often to fetch updated member list from registry (seconds)
+    poll_interval: 30
+    # How often to test connectivity to all known members (seconds)
+    check_interval: 60
+    # How often to send "I'm alive" heartbeat to registry (seconds)
+    heartbeat_interval: 45
+  
+  server:
+    # Local server settings for /health and /metrics endpoints
+    host: "0.0.0.0"  # Listen on all interfaces
+    port: 8757       # Port for health checks and Prometheus metrics
+    
+  checks:
+    # Timeout for TCP port connectivity tests (seconds)
+    tcp_timeout: 5
+    # Timeout for HTTP endpoint checks (seconds)
+    http_timeout: 10
+    # HTTP endpoints to test on each discovered member
+    http_endpoints:
+      - "/health"   # Test http://target:port/health
+      - "/metrics"  # Test http://target:port/metrics

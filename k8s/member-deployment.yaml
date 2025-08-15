@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netring-member
+  namespace: netring
+  labels:
+    app: netring-member
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netring-member
+  template:
+    metadata:
+      labels:
+        app: netring-member
+    spec:
+      containers:
+      - name: member
+        image: netring/member:latest
+        ports:
+        - containerPort: 8756
+        env:
+        - name: MEMBER_LOCATION
+          valueFrom:
+            configMapKeyRef:
+              name: netring-member-config
+              key: location
+        - name: REGISTRY_URL
+          valueFrom:
+            configMapKeyRef:
+              name: netring-member-config
+              key: registry_url
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8756
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8756
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: netring-member-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netring-member
+  namespace: netring
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8756"
+spec:
+  selector:
+    app: netring-member
+  ports:
+  - port: 8756
+    targetPort: 8756
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netring-member-config
+  namespace: netring
+data:
+  location: "us1-k8s"  # Change this per datacenter
+  registry_url: "http://netring-registry.netring.svc.cluster.local:8756"
+  member.yaml: |
+    member:
+      location: "us1-k8s"
+      instance_id: null
+      
+      registry:
+        url: "http://netring-registry.netring.svc.cluster.local:8756"
+        redis_host: "redis"
+        redis_port: 6379
+        redis_db: 0
+        redis_password: null
+      
+      intervals:
+        poll_interval: 30
+        check_interval: 60
+        heartbeat_interval: 45
+      
+      server:
+        host: "0.0.0.0"
+        port: 8756
+        
+      checks:
+        tcp_timeout: 5
+        http_timeout: 10
+        http_endpoints:
+          - "/health"
+          - "/metrics"

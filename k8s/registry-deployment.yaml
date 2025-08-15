@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netring-registry
+  namespace: netring
+  labels:
+    app: netring-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netring-registry
+  template:
+    metadata:
+      labels:
+        app: netring-registry
+    spec:
+      containers:
+      - name: registry
+        image: netring/registry:latest
+        ports:
+        - containerPort: 8756
+        env:
+        - name: REGISTRY_REDIS_HOST
+          value: "redis"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8756
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8756
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: netring-registry-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netring-registry
+  namespace: netring
+spec:
+  selector:
+    app: netring-registry
+  ports:
+  - port: 8756
+    targetPort: 8756
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netring-registry-config
+  namespace: netring
+data:
+  registry.yaml: |
+    registry:
+      redis:
+        host: "redis"
+        port: 6379
+        db: 0
+        password: null
+      
+      server:
+        host: "0.0.0.0"
+        port: 8756
+        
+      member_ttl: 300
+      cleanup_interval: 60

@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+    restart: unless-stopped
+    ports:
+      - "8756:8756"
+    depends_on:
+      - redis
+    environment:
+      - REGISTRY_REDIS_HOST=redis
+    volumes:
+      - ./config:/app/config
+
+  member:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.member
+    restart: unless-stopped
+    ports:
+      - "8757:8756"  # Different external port to avoid conflicts
+    depends_on:
+      - registry
+    environment:
+      - MEMBER_LOCATION=dc1-docker
+      - REGISTRY_URL=http://registry:8756
+    volumes:
+      - ./config:/app/config
+
+volumes:
+  redis_data:
