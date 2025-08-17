@@ -7,11 +7,6 @@ member:
   registry:
     # Central registry service URL where members register and discover each other
     url: "http://localhost:8756"
-    # Direct Redis connection (currently unused, registry handles Redis)
-    redis_host: "localhost"
-    redis_port: 6379
-    redis_db: 0
-    redis_password: null
   
   intervals:
     # How often to fetch updated member list from registry (seconds)
@@ -25,6 +20,11 @@ member:
     # Local server settings for /health and /metrics endpoints
     host: "0.0.0.0"  # Listen on all interfaces
     port: 8757       # Port for health checks and Prometheus metrics
+    # IP address to register with the registry (how other members reach this member)
+    # Options: "auto" (detect), "env:VAR_NAME" (from env var), or explicit IP
+    # For Kubernetes: use "env:POD_IP" or service/ingress IP
+    # For Docker: use host IP or service name
+    advertise_ip: "auto"
     
   checks:
     # Timeout for TCP port connectivity tests (seconds)

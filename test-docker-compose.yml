@@ -1,0 +1,107 @@
+version: "3.8"
+
+services:
+  # Redis for the registry
+  redis:
+    image: redis:7-alpine
+    container_name: netring-test-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  # Registry service
+  registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+    container_name: netring-test-registry
+    ports:
+      - "8756:8756"
+    volumes:
+      - ./config/registry.yaml:/app/config/registry.yaml:ro
+    depends_on:
+      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8756/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Test member 1 - will register with host IP on port 8757
+  member-test1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.member
+    container_name: netring-member-test1
+    ports:
+      - "8757:8757"
+    environment:
+      - NETRING_LOCATION=Test1
+      - NETRING_REGISTRY_URL=http://registry:8756
+      - NETRING_POLL_INTERVAL=30
+      - NETRING_CHECK_INTERVAL=60
+      - NETRING_HEARTBEAT_INTERVAL=45
+      - NETRING_TCP_TIMEOUT=5
+      - NETRING_HTTP_TIMEOUT=10
+      - NETRING_HTTP_ENDPOINTS=/health,/metrics
+      - NETRING_SERVER_HOST=0.0.0.0
+      - NETRING_SERVER_PORT=8757
+      - HOST_IP=10.0.1.145  # Use actual host IP, port 8757
+      - NETRING_BANDWIDTH_TEST_INTERVAL=300  # 5 minutes
+      - NETRING_TRACEROUTE_INTERVAL=300      # 5 minutes  
+      - NETRING_BANDWIDTH_TEST_SIZE_MB=1     # 1MB test
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8757/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["python", "member/main.py"]  # No config file - uses env vars
+
+  # Test member 2 - will register with host IP on port 8759
+  member-test2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.member
+    container_name: netring-member-test2
+    ports:
+      - "8759:8759"  # Different host port AND container port
+    environment:
+      - NETRING_LOCATION=Test2
+      - NETRING_REGISTRY_URL=http://registry:8756
+      - NETRING_POLL_INTERVAL=30
+      - NETRING_CHECK_INTERVAL=60
+      - NETRING_HEARTBEAT_INTERVAL=45
+      - NETRING_TCP_TIMEOUT=5
+      - NETRING_HTTP_TIMEOUT=10
+      - NETRING_HTTP_ENDPOINTS=/health,/metrics
+      - NETRING_SERVER_HOST=0.0.0.0
+      - NETRING_SERVER_PORT=8759  # Different container port too
+      - HOST_IP=10.0.1.145  # Use actual host IP, port 8759
+      - NETRING_BANDWIDTH_TEST_INTERVAL=300  # 5 minutes
+      - NETRING_TRACEROUTE_INTERVAL=300      # 5 minutes  
+      - NETRING_BANDWIDTH_TEST_SIZE_MB=1     # 1MB test
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8759/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["python", "member/main.py"]  # No config file - uses env vars
+
+volumes:
+  redis_data:

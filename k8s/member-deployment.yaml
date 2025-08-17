@@ -31,6 +31,10 @@ spec:
             configMapKeyRef:
               name: netring-member-config
               key: registry_url
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         volumeMounts:
         - name: config
           mountPath: /app/config
@@ -96,6 +100,8 @@ data:
       server:
         host: "0.0.0.0"
         port: 8756
+        # Use POD_IP for Kubernetes pod-to-pod connectivity
+        advertise_ip: "env:POD_IP"
         
       checks:
         tcp_timeout: 5

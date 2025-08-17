@@ -1,0 +1,67 @@
+# Expected Members Configuration
+# Define which members should be online at each location for proper monitoring coverage
+#
+# To enable this feature:
+# 1. Set enable_missing_detection: true in config/registry.yaml
+# 2. Configure the expected members below
+# 3. Restart the registry
+#
+# This feature is OPTIONAL and disabled by default to maintain current dashboard behavior
+
+expected_members:
+  # Location definitions with expected member counts and criticality levels
+  locations:
+    US1:
+      expected_count: 1
+      criticality: "high"      # high, medium, low
+      grace_period: 300        # seconds before marking as missing (5 minutes)
+      description: "US East Coast Primary"
+      
+    US2:
+      expected_count: 1  
+      criticality: "high"
+      grace_period: 300
+      description: "US West Coast Primary"
+      
+    EU1:
+      expected_count: 1
+      criticality: "high" 
+      grace_period: 300
+      description: "Europe Primary"
+      
+    ASIA1:
+      expected_count: 1
+      criticality: "medium"
+      grace_period: 600        # 10 minutes grace for less critical
+      description: "Asia Pacific Primary"
+      
+    DEV:
+      expected_count: 1
+      criticality: "low"
+      grace_period: 900        # 15 minutes grace for dev environment
+      description: "Development Environment"
+      
+    TEST:
+      expected_count: 0        # Test environments may come and go
+      criticality: "low"
+      grace_period: 1800       # 30 minutes
+      description: "Testing Environment"
+
+  # Global settings for missing member detection
+  settings:
+    # How often to check for missing members (seconds)
+    check_interval: 60
+    
+    # Minimum time a location must have been seen before expecting it (seconds)
+    location_establishment_time: 3600  # 1 hour
+    
+    # Alert thresholds
+    alerts:
+      critical_missing_threshold: 1    # Alert if any high criticality location missing members
+      total_missing_threshold: 3       # Alert if 3+ total members missing across all locations
+      
+    # UI settings
+    ui:
+      show_missing_grace_period: 60    # Show as "recently offline" for 1 minute before "missing"
+      missing_member_highlight: true   # Highlight missing members in red
+      expected_vs_actual_display: true # Show "2/3" style counters

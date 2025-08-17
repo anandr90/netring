@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime
@@ -30,6 +31,26 @@ class NetringRegistry:
         
         self.member_ttl = self.config['registry']['member_ttl']
         self.cleanup_interval = self.config['registry']['cleanup_interval']
+        
+        # Load expected members configuration
+        self.expected_members_config = None
+        self.missing_detection_enabled = False
+        self.missing_check_interval = 60
+        
+        if 'expected_members' in self.config['registry']:
+            expected_config = self.config['registry']['expected_members']
+            self.missing_detection_enabled = expected_config.get('enable_missing_detection', False)
+            self.missing_check_interval = expected_config.get('missing_check_interval', 60)
+            
+            if self.missing_detection_enabled:
+                config_file = expected_config.get('config_file', 'config/expected-members.yaml')
+                try:
+                    with open(config_file, 'r') as f:
+                        self.expected_members_config = yaml.safe_load(f)
+                    logger.info(f"Loaded expected members configuration from {config_file}")
+                except Exception as e:
+                    logger.error(f"Failed to load expected members config: {e}")
+                    self.missing_detection_enabled = False
         
     async def register_member(self, request):
         """Register a new ring member"""
@@ -79,10 +100,50 @@ class NetringRegistry:
             logger.error(f"Heartbeat failed: {e}")
             return web.json_response({'error': str(e)}, status=400)
     
+    async def deregister_member(self, request):
+        """Deregister a member (graceful shutdown)"""
+        try:
+            data = await request.json()
+            member_id = data['instance_id']
+            
+            key = f"netring:member:{member_id}"
+            
+            # Get member info for logging and tracking
+            member_data = self.redis_client.hgetall(key)
+            location = member_data.get('location', 'unknown') if member_data else 'unknown'
+            
+            if member_data:
+                # Create deregistered entry with original info + deregister timestamp
+                deregistered_info = member_data.copy()
+                deregistered_info['status'] = 'deregistered'
+                deregistered_info['deregistered_at'] = str(int(time.time()))
+                
+                # Store in deregistered members (with TTL for cleanup)
+                deregistered_key = f"netring:deregistered:{member_id}"
+                self.redis_client.hset(deregistered_key, mapping=deregistered_info)
+                self.redis_client.expire(deregistered_key, 3600)  # Keep for 1 hour
+                
+                # Add to deregistered members set
+                self.redis_client.sadd("netring:deregistered_members", member_id)
+                self.redis_client.expire("netring:deregistered_members", 3600)
+            
+            # Remove from active members
+            self.redis_client.delete(key)
+            self.redis_client.srem("netring:active_members", member_id)
+            
+            logger.info(f"Deregistered member {member_id} from {location}")
+            return web.json_response({'status': 'deregistered'})
+            
+        except Exception as e:
+            logger.error(f"Failed to deregister member: {e}")
+            return web.json_response({'error': str(e)}, status=400)
+    
     async def get_members(self, request):
-        """Get list of all active members"""
+        """Get list of all active and recently deregistered members"""
         try:
             members = []
+            
+            # Get active members
             active_member_ids = self.redis_client.smembers("netring:active_members")
             
             for member_id in active_member_ids:
@@ -96,16 +157,248 @@ class NetringRegistry:
                         'ip': member_data['ip'],
                         'port': int(member_data['port']),
                         'last_seen': int(member_data['last_seen']),
-                        'registered_at': int(member_data['registered_at'])
+                        'registered_at': int(member_data['registered_at']),
+                        'status': 'active'
                     })
                 else:
                     # Remove stale member from active set
                     self.redis_client.srem("netring:active_members", member_id)
             
+            # Get deregistered members (for UI display)
+            deregistered_member_ids = self.redis_client.smembers("netring:deregistered_members")
+            
+            for member_id in deregistered_member_ids:
+                key = f"netring:deregistered:{member_id}"
+                member_data = self.redis_client.hgetall(key)
+                
+                if member_data:
+                    members.append({
+                        'instance_id': member_id,
+                        'location': member_data['location'],
+                        'ip': member_data['ip'],
+                        'port': int(member_data['port']),
+                        'last_seen': int(member_data['last_seen']),
+                        'registered_at': int(member_data['registered_at']),
+                        'deregistered_at': int(member_data['deregistered_at']),
+                        'status': 'deregistered'
+                    })
+                else:
+                    # Remove stale deregistered member
+                    self.redis_client.srem("netring:deregistered_members", member_id)
+            
             return web.json_response({'members': members})
             
         except Exception as e:
             logger.error(f"Failed to get members: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    def get_missing_members_analysis(self):
+        """Analyze which expected members are missing"""
+        if not self.missing_detection_enabled or not self.expected_members_config:
+            return {
+                'enabled': False,
+                'locations': {},
+                'alerts': []
+            }
+        
+        try:
+            # Get current active members by location
+            active_member_ids = self.redis_client.smembers("netring:active_members")
+            current_members_by_location = {}
+            
+            for member_id in active_member_ids:
+                key = f"netring:member:{member_id}"
+                member_data = self.redis_client.hgetall(key)
+                
+                if member_data:
+                    location = member_data['location']
+                    if location not in current_members_by_location:
+                        current_members_by_location[location] = []
+                    
+                    current_members_by_location[location].append({
+                        'instance_id': member_id,
+                        'last_seen': int(member_data['last_seen']),
+                        'ip': member_data['ip']
+                    })
+            
+            # Analyze each expected location
+            expected_locations = self.expected_members_config['expected_members']['locations']
+            current_time = int(time.time())
+            location_analysis = {}
+            alerts = []
+            
+            for location, expected_config in expected_locations.items():
+                expected_count = expected_config['expected_count']
+                criticality = expected_config['criticality']
+                grace_period = expected_config['grace_period']
+                description = expected_config.get('description', location)
+                
+                # Get current members at this location
+                current_members = current_members_by_location.get(location, [])
+                actual_count = len(current_members)
+                
+                # Determine status
+                missing_count = max(0, expected_count - actual_count)
+                status = 'healthy'
+                
+                if missing_count > 0:
+                    if expected_count > 0:  # Only alert if we expect members
+                        status = 'missing_members'
+                        
+                        # Check if this should trigger an alert based on criticality
+                        if criticality == 'high':
+                            alerts.append({
+                                'level': 'error',
+                                'message': f"High criticality location '{location}' missing {missing_count} member(s)",
+                                'location': location,
+                                'missing_count': missing_count,
+                                'criticality': criticality
+                            })
+                        elif criticality == 'medium' and missing_count >= 2:
+                            alerts.append({
+                                'level': 'warning', 
+                                'message': f"Medium criticality location '{location}' missing {missing_count} member(s)",
+                                'location': location,
+                                'missing_count': missing_count,
+                                'criticality': criticality
+                            })
+                elif actual_count > expected_count:
+                    status = 'extra_members'
+                
+                location_analysis[location] = {
+                    'expected_count': expected_count,
+                    'actual_count': actual_count,
+                    'missing_count': missing_count,
+                    'status': status,
+                    'criticality': criticality,
+                    'grace_period': grace_period,
+                    'description': description,
+                    'current_members': current_members
+                }
+            
+            # Check for unexpected locations (members in locations not in config)
+            for location in current_members_by_location:
+                if location not in expected_locations:
+                    members = current_members_by_location[location]
+                    location_analysis[location] = {
+                        'expected_count': 0,
+                        'actual_count': len(members),
+                        'missing_count': 0,
+                        'status': 'unexpected_location',
+                        'criticality': 'unknown',
+                        'grace_period': 0,
+                        'description': f'Unexpected location: {location}',
+                        'current_members': members
+                    }
+            
+            # Global alerts
+            total_missing = sum(loc['missing_count'] for loc in location_analysis.values())
+            critical_missing = sum(1 for loc in location_analysis.values() 
+                                 if loc['criticality'] == 'high' and loc['missing_count'] > 0)
+            
+            settings = self.expected_members_config['expected_members']['settings']
+            alert_settings = settings.get('alerts', {})
+            
+            if critical_missing >= alert_settings.get('critical_missing_threshold', 1):
+                alerts.append({
+                    'level': 'error',
+                    'message': f"Critical: {critical_missing} high-priority location(s) missing members",
+                    'critical_locations': critical_missing,
+                    'total_missing': total_missing
+                })
+            elif total_missing >= alert_settings.get('total_missing_threshold', 3):
+                alerts.append({
+                    'level': 'warning',
+                    'message': f"Warning: {total_missing} total members missing across all locations",
+                    'total_missing': total_missing
+                })
+            
+            return {
+                'enabled': True,
+                'timestamp': current_time,
+                'locations': location_analysis,
+                'alerts': alerts,
+                'summary': {
+                    'total_expected_locations': len(expected_locations),
+                    'total_missing_members': total_missing,
+                    'critical_locations_missing': critical_missing,
+                    'unexpected_locations': sum(1 for loc in location_analysis.values() 
+                                              if loc['status'] == 'unexpected_location')
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze missing members: {e}")
+            return {
+                'enabled': True,
+                'error': str(e),
+                'locations': {},
+                'alerts': [{'level': 'error', 'message': f'Missing members analysis failed: {e}'}]
+            }
+    
+    async def get_members_with_analysis(self, request):
+        """Get members list with missing members analysis"""
+        try:
+            # Get members data directly (not as response object)
+            members = []
+            
+            # Get active members
+            active_member_ids = self.redis_client.smembers("netring:active_members")
+            
+            for member_id in active_member_ids:
+                key = f"netring:member:{member_id}"
+                member_data = self.redis_client.hgetall(key)
+                
+                if member_data:
+                    members.append({
+                        'instance_id': member_id,
+                        'location': member_data['location'],
+                        'ip': member_data['ip'],
+                        'port': int(member_data['port']),
+                        'last_seen': int(member_data['last_seen']),
+                        'registered_at': int(member_data['registered_at']),
+                        'status': 'active'
+                    })
+                else:
+                    # Remove stale member from active set
+                    self.redis_client.srem("netring:active_members", member_id)
+            
+            # Get deregistered members (for UI display)
+            deregistered_member_ids = self.redis_client.smembers("netring:deregistered_members")
+            
+            for member_id in deregistered_member_ids:
+                key = f"netring:deregistered:{member_id}"
+                member_data = self.redis_client.hgetall(key)
+                
+                if member_data:
+                    members.append({
+                        'instance_id': member_id,
+                        'location': member_data['location'],
+                        'ip': member_data['ip'],
+                        'port': int(member_data['port']),
+                        'last_seen': int(member_data['last_seen']),
+                        'registered_at': int(member_data['registered_at']),
+                        'deregistered_at': int(member_data['deregistered_at']),
+                        'status': 'deregistered'
+                    })
+                else:
+                    # Remove stale deregistered member
+                    self.redis_client.srem("netring:deregistered_members", member_id)
+            
+            # Add missing members analysis
+            missing_analysis = self.get_missing_members_analysis()
+            
+            # Combine the data
+            response_data = {
+                'members': members,
+                'missing_analysis': missing_analysis,
+                'timestamp': int(time.time())
+            }
+            
+            return web.json_response(response_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to get members with analysis: {e}", exc_info=True)
             return web.json_response({'error': str(e)}, status=500)
     
     async def health_check(self, request):
@@ -116,11 +409,67 @@ class NetringRegistry:
         except Exception as e:
             return web.json_response({'status': 'unhealthy', 'error': str(e)}, status=503)
     
+    async def report_metrics(self, request):
+        """Accept metrics from members and store them in Redis"""
+        try:
+            data = await request.json()
+            member_id = data['instance_id']
+            metrics_data = data['metrics']
+            
+            # Store metrics in Redis with TTL
+            metrics_key = f"netring:metrics:{member_id}"
+            self.redis_client.hset(metrics_key, mapping={
+                'metrics_data': json.dumps(metrics_data),
+                'reported_at': int(time.time())
+            })
+            self.redis_client.expire(metrics_key, 300)  # 5 minutes TTL
+            
+            # Add to metrics reporting set
+            self.redis_client.sadd("netring:reporting_members", member_id)
+            self.redis_client.expire("netring:reporting_members", 300)
+            
+            logger.debug(f"Received metrics from member {member_id}")
+            return web.json_response({'status': 'ok'})
+            
+        except Exception as e:
+            logger.error(f"Failed to report metrics: {e}")
+            return web.json_response({'error': str(e)}, status=400)
+
+    async def get_member_metrics(self, request):
+        """Return aggregated metrics from all reporting members"""
+        try:
+            metrics = {}
+            reporting_member_ids = self.redis_client.smembers("netring:reporting_members")
+            
+            for member_id in reporting_member_ids:
+                metrics_key = f"netring:metrics:{member_id}"
+                metric_data = self.redis_client.hgetall(metrics_key)
+                
+                if metric_data and 'metrics_data' in metric_data:
+                    try:
+                        parsed_metrics = json.loads(metric_data['metrics_data'])
+                        metrics[member_id] = parsed_metrics
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid metrics data from member {member_id}")
+                        metrics[member_id] = {}
+                else:
+                    # Remove stale member from reporting set
+                    self.redis_client.srem("netring:reporting_members", member_id)
+            
+            return web.json_response({'metrics': metrics})
+            
+        except Exception as e:
+            logger.error(f"Failed to get member metrics: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    
     async def cleanup_dead_members(self):
-        """Background task to cleanup dead members"""
+        """Background task to cleanup dead members and old deregistered entries"""
         while True:
             try:
                 current_time = int(time.time())
+                
+                # Cleanup dead active members
                 active_members = self.redis_client.smembers("netring:active_members")
                 
                 for member_id in active_members:
@@ -138,6 +487,40 @@ class NetringRegistry:
                         self.redis_client.srem("netring:active_members", member_id)
                         logger.info(f"Cleaned up dead member {member_id}")
                 
+                # Cleanup old deregistered members (older than 1 hour)
+                deregistered_members = self.redis_client.smembers("netring:deregistered_members")
+                
+                for member_id in deregistered_members:
+                    key = f"netring:deregistered:{member_id}"
+                    member_data = self.redis_client.hgetall(key)
+                    
+                    if not member_data:
+                        self.redis_client.srem("netring:deregistered_members", member_id)
+                        continue
+                    
+                    deregistered_at = int(member_data.get('deregistered_at', 0))
+                    if current_time - deregistered_at > 3600:  # 1 hour
+                        self.redis_client.delete(key)
+                        self.redis_client.srem("netring:deregistered_members", member_id)
+                        logger.debug(f"Cleaned up old deregistered member {member_id}")
+                
+                # Cleanup stale metrics (older than 5 minutes)
+                reporting_members = self.redis_client.smembers("netring:reporting_members")
+                
+                for member_id in reporting_members:
+                    metrics_key = f"netring:metrics:{member_id}"
+                    metric_data = self.redis_client.hgetall(metrics_key)
+                    
+                    if not metric_data:
+                        self.redis_client.srem("netring:reporting_members", member_id)
+                        continue
+                    
+                    reported_at = int(metric_data.get('reported_at', 0))
+                    if current_time - reported_at > 300:  # 5 minutes
+                        self.redis_client.delete(metrics_key)
+                        self.redis_client.srem("netring:reporting_members", member_id)
+                        logger.debug(f"Cleaned up stale metrics from member {member_id}")
+                
                 await asyncio.sleep(self.cleanup_interval)
                 
             except Exception as e:
@@ -153,8 +536,25 @@ async def init_app(config_path: str):
     # API routes
     app.router.add_post('/register', registry.register_member)
     app.router.add_post('/heartbeat', registry.heartbeat)
+    app.router.add_post('/deregister', registry.deregister_member)
+    app.router.add_post('/report_metrics', registry.report_metrics)
     app.router.add_get('/members', registry.get_members)
+    app.router.add_get('/members_with_analysis', registry.get_members_with_analysis)
     app.router.add_get('/health', registry.health_check)
+    app.router.add_get('/metrics', registry.get_member_metrics)
+    
+    # Static files for frontend
+    import os
+    static_dir = os.path.join(os.path.dirname(__file__), 'static')
+    
+    async def serve_index(request):
+        return web.FileResponse(os.path.join(static_dir, 'index.html'))
+    
+    # Serve index.html at root
+    app.router.add_get('/', serve_index)
+    
+    # Serve static files
+    app.router.add_static('/static', static_dir, name='static')
     
     # Start cleanup task
     asyncio.create_task(registry.cleanup_dead_members())
