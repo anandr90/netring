@@ -1,31 +1,39 @@
-# Netring - Distributed Network Connectivity Monitor
+# Netring - Distributed Connectivity Monitor
 
-A distributed system for monitoring connectivity between datacenters and office locations using a ring-based architecture. Each location runs a monitoring service that tests connectivity to all other locations and reports metrics via Prometheus.
+A distributed network monitoring system that provides real-time connectivity testing between multiple datacenters or network locations using a ring-based architecture.
 
-## Quick Start
+## 🚀 Quick Start
 
-### 🚀 Basic Setup (Development)
-
-1. **Clone and run locally:**
+### Using Docker (Recommended)
 ```bash
+# Start complete test environment
+docker-compose -f test-docker-compose.yml up -d
+
+# Access dashboard
+open http://localhost:8756
+```
+
+### Manual Setup
+```bash
+# Clone and setup
 git clone <repository>
 cd netring
-
-# Start Redis
-brew install redis && brew services start redis
 
 # Install dependencies
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
+# Start Redis
+brew install redis && brew services start redis
+
 # Start registry (central service)
-python registry/main.py config/registry.yaml
+python3 registry/main.py config/registry.yaml
 
 # Start member (in another terminal)
-python member/main.py config/member.yaml
+python3 member/main.py config/member.yaml
 ```
 
-2. **Check status:**
+### Quick Status Check
 ```bash
 curl http://localhost:8756/health    # Registry health
 curl http://localhost:8757/health    # Member health  
@@ -33,29 +41,58 @@ curl http://localhost:8756/members   # See all registered members
 curl http://localhost:8757/metrics   # Prometheus metrics
 ```
 
-### 🐳 Docker Deployment
-```bash
-# Using provided images
-docker-compose up -d
+## ✨ Features
 
-# Or build your own
-docker build -f docker/Dockerfile.registry -t netring/registry .
-docker build -f docker/Dockerfile.member -t netring/member .
+### Core Monitoring
+- **Real-time connectivity monitoring** between ring members
+- **Multiple test types**: TCP, HTTP, bandwidth, traceroute  
+- **Interactive web dashboard** with connectivity matrix
+- **Automatic member discovery** via central registry
+- **Prometheus metrics** integration
+
+### Advanced Features (v1.2.0+)
+- **🛡️ Fault-tolerant design** with resilient background tasks
+- **📊 Bandwidth testing** (1MB tests every 5 minutes)
+- **🛣️ Traceroute analysis** for bottleneck identification
+- **🔍 Optional missing members detection** with alerting
+- **💫 Interactive member tooltips** with real-time stats
+- **🐳 Docker & Kubernetes support**
+
+## 📁 Project Structure
+
+```
+netring/
+├── member/           # Member node implementation
+├── registry/         # Registry server with web dashboard
+├── config/           # Configuration files
+├── deployment/       # Docker Compose & K8s manifests
+├── tests/            # Test suite
+├── docs/             # Documentation
+└── docker/           # Docker build files
 ```
 
-### ☸️ Kubernetes Deployment
+## 🧪 Testing
+
 ```bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/redis-deployment.yaml
-kubectl apply -f k8s/registry-deployment.yaml
-kubectl apply -f k8s/member-deployment.yaml
+# Run core unit tests
+python3 run_tests.py unit
+
+# Run comprehensive test suite  
+python3 run_all_tests.py
+
+# Verify fault tolerance
+python3 tests/verify_fault_tolerance.py
 ```
 
----
+## 📚 Documentation
 
-## Advanced Configuration
+- **[Fault Tolerance](docs/FAULT-TOLERANCE.md)** - Resilient background tasks and error handling
+- **[Missing Members Detection](docs/MISSING-MEMBERS.md)** - Optional alerting for expected members
+- **[Version History](docs/VERSION-HISTORY.md)** - Release notes and upgrade paths
+- **[Testing Guide](docs/TESTING.md)** - Comprehensive testing approach
+- **[Test Results](docs/TEST-RESULTS.md)** - Latest test verification results
 
-### Architecture Overview
+## 🏗️ Architecture
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -77,196 +114,128 @@ kubectl apply -f k8s/member-deployment.yaml
 
 ### Core Components
 
-#### Registry Service (US1 Only)
-- **Purpose**: Central coordination point for member discovery
-- **Technology**: Python + Redis + aiohttp
-- **Port**: 8756
-- **Responsibilities**:
-  - Member registration and heartbeat management
-  - Member discovery API
-  - Automatic cleanup of dead members
-  - Health monitoring
+- **Registry Service**: Central coordination (Python + Redis + aiohttp)
+- **Member Service**: Connectivity testing (Python + aiohttp + Prometheus)
+- **Web Dashboard**: Real-time visualization with interactive features
+- **Redis Backend**: Member state and metrics storage
 
-#### Member Service (All Locations)
-- **Purpose**: Connectivity testing and metrics collection
-- **Technology**: Python + aiohttp + Prometheus client
-- **Port**: 8756 (configurable)
-- **Responsibilities**:
-  - Register with central registry
-  - Discover other ring members
-  - Perform TCP/HTTP connectivity tests
-  - Expose Prometheus metrics
-  - Health endpoint
+## 🔧 Configuration
 
-### Configuration Deep Dive
-
-#### Registry Configuration (`config/registry.yaml`)
-```yaml
-registry:
-  redis:
-    host: "redis.us1.company.com"
-    port: 6379
-    db: 0
-    password: null                    # Optional Redis auth
-  
-  server:
-    host: "0.0.0.0"                  # Listen interface
-    port: 8756                       # Registry API port
-    
-  member_ttl: 300                    # Member expiration (seconds)
-  cleanup_interval: 60               # Cleanup frequency (seconds)
+### Environment Variables (Recommended)
+```bash
+export NETRING_LOCATION=US1
+export NETRING_REGISTRY_URL=http://registry:8756
+export NETRING_SERVER_PORT=8757
+export NETRING_BANDWIDTH_TEST_INTERVAL=300  # 5 minutes
+export NETRING_TRACEROUTE_INTERVAL=300      # 5 minutes
 ```
 
-#### Member Configuration (`config/member.yaml`)
-```yaml
-member:
-  # Location identifier - appears in all metrics labels
-  location: "us1-k8s"               # Examples: "eu1-k8s", "asia1-docker"
-  instance_id: null                 # Auto-generated UUID if null
-  
-  registry:
-    # Central registry connection
-    url: "http://registry.us1.company.com:8756"
-    redis_host: "redis.us1.company.com"    # Direct Redis (unused)
-    redis_port: 6379
-    redis_db: 0
-    redis_password: null
-  
-  intervals:
-    poll_interval: 30               # Registry polling frequency
-    check_interval: 60              # Connectivity test frequency  
-    heartbeat_interval: 45          # Heartbeat frequency
-  
-  server:
-    host: "0.0.0.0"                # Local server bind
-    port: 8756                     # Health/metrics port
-    
-  checks:
-    tcp_timeout: 5                 # TCP connection timeout
-    http_timeout: 10               # HTTP request timeout
-    http_endpoints:                # Endpoints to test
-      - "/health"
-      - "/metrics"
-```
+### Configuration Files
+- `config/registry.yaml` - Registry server settings
+- `config/member.yaml` - Member node settings (optional)
+- `config/expected-members.yaml` - Expected members for alerting (optional)
 
-### Prometheus Metrics Reference
+## 📊 Dashboard Features
 
-#### Connectivity Metrics
+- **Real-time connectivity matrix** with status indicators
+- **Performance metrics** (bandwidth, latency, traceroute)
+- **Member health monitoring** with last seen timestamps
+- **Optional missing members alerts** with location-based tracking
+- **Interactive member tooltips** with detailed statistics
+
+## 🛡️ Production Ready
+
+- ✅ **Fault tolerance**: Background tasks resilient to network failures
+- ✅ **Health monitoring**: Automatic dead task detection and restart
+- ✅ **Graceful degradation**: Continues operation during outages
+- ✅ **Zero-downtime deployment**: Backward compatible updates
+- ✅ **Comprehensive testing**: Full test coverage verified
+
+## 📊 Prometheus Metrics
+
+### Connectivity Metrics
 ```promql
 # TCP connectivity between locations (1=success, 0=failure)
 netring_connectivity_tcp{
   source_location="us1-k8s",
-  source_instance="uuid-123",
-  target_location="eu1-k8s", 
-  target_instance="uuid-456",
+  target_location="eu1-k8s",
   target_ip="10.1.2.3"
 } 1
 
-# HTTP endpoint connectivity (1=success, 0=failure)  
+# HTTP endpoint connectivity  
 netring_connectivity_http{
   source_location="us1-k8s",
   target_location="eu1-k8s",
-  endpoint="/health",
-  target_ip="10.1.2.3"
+  endpoint="/health"
 } 1
 ```
 
-#### Performance Metrics
+### Performance Metrics
 ```promql
 # Check duration histograms
-netring_check_duration_seconds_bucket{
-  check_type="tcp",
+netring_check_duration_seconds_bucket
+
+# Bandwidth test results (v1.2.0+)
+netring_bandwidth_mbps{
+  source_location="us1-k8s",
   target_location="eu1-k8s"
-} 
+} 415.7
 
-# Total discovered members
+# Traceroute analysis (v1.2.0+)
+netring_traceroute_hops_total
+netring_traceroute_max_hop_latency_ms
+
+# Member tracking
 netring_members_total 5
-
-# Member last seen timestamps  
-netring_member_last_seen_timestamp{
-  location="eu1-k8s",
-  instance_id="uuid-456"
-} 1629123456
 ```
 
-### Production Deployment Strategies
+## 🚀 Deployment
 
-#### Multi-Datacenter Setup
+### Multi-Datacenter Setup
 
-1. **US1 (Primary)**:
-   ```bash
-   # Deploy registry + member
-   kubectl apply -f k8s/namespace.yaml
-   kubectl apply -f k8s/redis-deployment.yaml  
-   kubectl apply -f k8s/registry-deployment.yaml
-   kubectl apply -f k8s/member-deployment.yaml
-   ```
-
-2. **EU1/ASIA1 (Secondary)**:
-   ```bash
-   # Deploy member only, update config:
-   # - member.location: "eu1-k8s" 
-   # - registry.url: "http://registry.us1.company.com:8756"
-   kubectl apply -f k8s/namespace.yaml
-   kubectl apply -f k8s/member-deployment.yaml
-   ```
-
-#### Docker Swarm/Standalone
+**US1 (Primary with Registry):**
 ```bash
-# US1 (with registry)
-docker run -d --name netring-registry \
-  -p 8756:8756 \
-  -v ./config:/app/config \
-  harbor.rajasystems.com/library/netring-registry:latest
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/redis-deployment.yaml  
+kubectl apply -f k8s/registry-deployment.yaml
+kubectl apply -f k8s/member-deployment.yaml
+```
 
-docker run -d --name netring-member \
-  -p 8757:8756 \
-  -v ./config:/app/config \
-  harbor.rajasystems.com/library/netring-member:latest
+**EU1/ASIA1 (Members Only):**
+```bash
+# Update member.location: "eu1-k8s" in config
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/member-deployment.yaml
+```
 
-# Other locations (member only)
+### Docker Deployment
+```bash
+# Using production images
 docker run -d --name netring-member \
-  -p 8756:8756 \
-  -e MEMBER_LOCATION="eu1-docker" \
-  -e REGISTRY_URL="http://registry.us1.company.com:8756" \
+  -p 8757:8757 \
+  -e NETRING_LOCATION="us1-docker" \
+  -e NETRING_REGISTRY_URL="http://registry.company.com:8756" \
   harbor.rajasystems.com/library/netring-member:latest
 ```
 
-### Monitoring & Alerting
+See `deployment/` directory for complete configurations.
 
-#### Prometheus Configuration
+## 📈 Monitoring Integration
+
+### Prometheus Configuration
 ```yaml
-# prometheus.yml
 scrape_configs:
   - job_name: 'netring'
     static_configs:
       - targets:
-        - 'us1-member.company.com:8756'
-        - 'eu1-member.company.com:8756' 
-        - 'asia1-member.company.com:8756'
+        - 'us1-member.company.com:8757'
+        - 'eu1-member.company.com:8757'
     metrics_path: '/metrics'
     scrape_interval: 30s
 ```
 
-#### Grafana Dashboard Queries
-```promql
-# Connectivity matrix heatmap
-netring_connectivity_tcp
-
-# Failed connections  
-netring_connectivity_tcp == 0
-
-# Average latency by location
-rate(netring_check_duration_seconds_sum[5m]) / 
-rate(netring_check_duration_seconds_count[5m])
-
-# Member count over time
-netring_members_total
-```
-
-#### Alerting Rules
+### Alerting Rules
 ```yaml
-# alerts.yml
 groups:
 - name: netring
   rules:
@@ -278,120 +247,50 @@ groups:
     annotations:
       summary: "Connectivity failure between {{ $labels.source_location }} and {{ $labels.target_location }}"
       
-  - alert: NetringMemberDown  
-    expr: up{job="netring"} == 0
-    for: 1m
+  - alert: NetringLowBandwidth
+    expr: netring_bandwidth_mbps < 100
+    for: 5m
     labels:
-      severity: critical
-    annotations:
-      summary: "Netring member {{ $labels.instance }} is down"
+      severity: warning
 ```
 
-### API Reference
+Perfect for integration with:
+- **Prometheus** - Metrics collection and alerting
+- **Grafana** - Advanced dashboards and visualization  
+- **AlertManager** - Alert routing and notification
+- **PagerDuty/Slack** - Incident response workflows
 
-#### Registry Endpoints
+## 🔍 Troubleshooting
 
-**POST /register** - Register new member
-```json
-{
-  "instance_id": "uuid-optional",
-  "location": "us1-k8s", 
-  "ip": "10.1.2.3",
-  "port": 8756
-}
-```
+### Common Issues
 
-**POST /heartbeat** - Update heartbeat
-```json
-{
-  "instance_id": "uuid-123"
-}
-```
-
-**GET /members** - List active members
-```json
-{
-  "members": [
-    {
-      "instance_id": "uuid-123",
-      "location": "us1-k8s",
-      "ip": "10.1.2.3", 
-      "port": 8756,
-      "last_seen": 1629123456,
-      "registered_at": 1629120000
-    }
-  ]
-}
-```
-
-#### Member Endpoints
-
-**GET /health** - Health check
-```json
-{
-  "status": "healthy",
-  "instance_id": "uuid-123",
-  "location": "us1-k8s",
-  "members_count": 3,
-  "timestamp": 1629123456.789
-}
-```
-
-**GET /metrics** - Prometheus metrics (text format)
-
-### Troubleshooting
-
-#### Common Issues
-
-1. **Members not discovering each other**:
-   ```bash
-   # Check registry connectivity
-   curl http://registry.us1.company.com:8756/health
-   
-   # Verify member registration
-   curl http://registry.us1.company.com:8756/members
-   
-   # Check member logs for heartbeat failures
-   kubectl logs -f deployment/netring-member
-   ```
-
-2. **Connectivity checks showing failures**:
-   ```bash
-   # Test direct connectivity
-   telnet target-ip 8756
-   curl http://target-ip:8756/health
-   
-   # Check firewall rules between locations
-   # Verify network policies in Kubernetes
-   ```
-
-3. **Redis connection issues**:
-   ```bash
-   # Test Redis connectivity from registry pod
-   redis-cli -h redis.us1.company.com ping
-   
-   # Check Redis logs
-   kubectl logs -f deployment/redis
-   ```
-
-#### Debug Mode
+**Members not discovering each other:**
 ```bash
-# Enable debug logging
-export PYTHONPATH=/app
-export LOG_LEVEL=DEBUG
-python registry/main.py config/registry.yaml
+# Check registry connectivity
+curl http://registry.company.com:8756/health
+
+# Verify member registration
+curl http://registry.company.com:8756/members
+
+# Check member logs
+docker logs netring-member
 ```
 
-### Security Considerations
+**Connectivity checks failing:**
+```bash
+# Test direct connectivity
+telnet target-ip 8757
+curl http://target-ip:8757/health
 
-- **Network**: Ensure ports 8756 (and Redis 6379) are accessible between locations
-- **Authentication**: Consider adding API keys for registry access in production
-- **TLS**: Add HTTPS support for registry communication over public networks
-- **Firewall**: Whitelist only necessary IPs between datacenters
+# Check firewall rules between locations
+```
 
-### Performance Tuning
+**Debug Mode:**
+```bash
+export LOG_LEVEL=DEBUG
+python3 registry/main.py config/registry.yaml
+```
 
-- **Check intervals**: Adjust based on network latency requirements
-- **Timeouts**: Increase for high-latency connections
-- **Redis**: Tune memory and persistence settings for large deployments
-- **Member TTL**: Balance between responsiveness and stability
+---
+
+**Latest Release**: v1.1.9 with fault tolerance improvements and optional missing members detection system.
