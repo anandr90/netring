@@ -6,7 +6,7 @@ member:
   
   registry:
     # Central registry service URL where members register and discover each other
-    url: "http://localhost:8756"
+    url: "http://registry:8756"
   
   intervals:
     # How often to fetch updated member list from registry (seconds)
@@ -15,6 +15,10 @@ member:
     check_interval: 60
     # How often to send "I'm alive" heartbeat to registry (seconds)
     heartbeat_interval: 45
+    # How often to run bandwidth tests (seconds)
+    bandwidth_test_interval: 300
+    # How often to run traceroute tests (seconds)
+    traceroute_interval: 300
   
   server:
     # Local server settings for /health and /metrics endpoints
@@ -35,3 +39,7 @@ member:
     http_endpoints:
       - "/health"   # Test http://target:port/health
       - "/metrics"  # Test http://target:port/metrics
+      
+  tests:
+    # Size of bandwidth test data in MB
+    bandwidth_test_size_mb: 1

@@ -1,6 +1,6 @@
 registry:
   redis:
-    host: "redis"  # Use container name for internal Docker networking
+    host: "redis"  # Use Docker service name
     port: 6379
     db: 0
     password: null

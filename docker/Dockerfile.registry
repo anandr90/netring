@@ -6,9 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy registry code
+# Copy registry code and version
 COPY registry/ ./registry/
 COPY config/ ./config/
+COPY VERSION ./VERSION
 
 # Create non-root user
 RUN useradd -m -u 1000 netring && chown -R netring:netring /app

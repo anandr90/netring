@@ -12,6 +12,18 @@ import redis
 import yaml
 from aiohttp import web
 
+# Import network topology analyzer
+try:
+    from .network_topology import NetworkTopologyAnalyzer
+    from .version import get_cached_version
+except ImportError:
+    # Handle case when running as script (not as module)
+    import sys
+    import os
+    sys.path.append(os.path.dirname(__file__))
+    from network_topology import NetworkTopologyAnalyzer
+    from version import get_cached_version
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -51,6 +63,9 @@ class NetringRegistry:
                 except Exception as e:
                     logger.error(f"Failed to load expected members config: {e}")
                     self.missing_detection_enabled = False
+        
+        # Initialize network topology analyzer
+        self.topology_analyzer = NetworkTopologyAnalyzer()
         
     async def register_member(self, request):
         """Register a new ring member"""
@@ -405,9 +420,45 @@ class NetringRegistry:
         """Health check endpoint"""
         try:
             self.redis_client.ping()
-            return web.json_response({'status': 'healthy', 'timestamp': time.time()})
+            return web.json_response({
+                'status': 'healthy', 
+                'version': get_cached_version(),
+                'component': 'registry',
+                'timestamp': time.time()
+            })
         except Exception as e:
-            return web.json_response({'status': 'unhealthy', 'error': str(e)}, status=503)
+            return web.json_response({
+                'status': 'unhealthy', 
+                'version': get_cached_version(),
+                'component': 'registry',
+                'error': str(e), 
+                'timestamp': time.time()
+            }, status=503)
+    
+    async def clear_redis(self, request):
+        """Clear all Redis data - useful for development/testing"""
+        try:
+            # Get count before clearing
+            keys = self.redis_client.keys("netring:*")
+            count = len(keys)
+            
+            # Clear all netring-related keys
+            if count > 0:
+                self.redis_client.delete(*keys)
+            
+            # Clear topology analyzer data as well
+            self.topology_analyzer.clear_topology()
+            
+            logger.info(f"Cleared {count} Redis keys and topology data")
+            return web.json_response({
+                'status': 'cleared', 
+                'keys_deleted': count,
+                'timestamp': time.time()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to clear Redis: {e}")
+            return web.json_response({'error': str(e)}, status=500)
     
     async def report_metrics(self, request):
         """Accept metrics from members and store them in Redis"""
@@ -428,12 +479,186 @@ class NetringRegistry:
             self.redis_client.sadd("netring:reporting_members", member_id)
             self.redis_client.expire("netring:reporting_members", 300)
             
+            # Update topology analyzer with new metrics data
+            await self._update_topology_from_metrics(member_id, metrics_data)
+            
             logger.debug(f"Received metrics from member {member_id}")
             return web.json_response({'status': 'ok'})
             
         except Exception as e:
             logger.error(f"Failed to report metrics: {e}")
             return web.json_response({'error': str(e)}, status=400)
+
+    async def _update_topology_from_metrics(self, member_id: str, metrics_data: Dict):
+        """Extract topology data from metrics and update topology analyzer"""
+        try:
+            # Get member information
+            member_key = f"netring:member:{member_id}"
+            member_info = self.redis_client.hgetall(member_key)
+            
+            if not member_info:
+                logger.debug(f"No member info found for {member_id}")
+                return
+            
+            source_location = member_info.get('location', 'unknown')
+            
+            # Extract detailed traceroute data (preferred) or fallback to aggregated data
+            detailed_traceroute_data = metrics_data.get('detailed_traceroute_data', {})
+            traceroute_tests = metrics_data.get('traceroute_tests', {})
+            bandwidth_tests = metrics_data.get('bandwidth_tests', {})
+            
+            # Process detailed traceroute data first (contains real hop IPs)
+            for target_key, detailed_data in detailed_traceroute_data.items():
+                target_location = detailed_data.get('target_location', 'unknown')
+                
+                if target_location == 'unknown' or target_location == source_location:
+                    continue
+                
+                # Get bandwidth data for this target
+                bandwidth_mbps = None
+                if target_key in bandwidth_tests:
+                    bandwidth_mbps = bandwidth_tests[target_key].get('bandwidth_mbps')
+                
+                # Use real hop data from detailed traceroute
+                hops = detailed_data.get('hops', [])
+                
+                # Add to topology analyzer
+                self.topology_analyzer.add_traceroute_data(
+                    source_location=source_location,
+                    target_location=target_location,
+                    hops=hops,
+                    bandwidth_mbps=bandwidth_mbps
+                )
+                
+                logger.debug(f"Updated topology with detailed data: {source_location} -> {target_location} "
+                           f"(hops: {len(hops)}, real hop IPs)")
+            
+            # Process remaining traceroute tests that don't have detailed data (fallback)
+            for target_key, traceroute_data in traceroute_tests.items():
+                # Skip if we already processed this with detailed data
+                if target_key in detailed_traceroute_data:
+                    continue
+                    
+                target_location = traceroute_data.get('labels', {}).get('target_location', 'unknown')
+                
+                if target_location == 'unknown' or target_location == source_location:
+                    continue
+                
+                # Get bandwidth data for this target
+                bandwidth_mbps = None
+                if target_key in bandwidth_tests:
+                    bandwidth_mbps = bandwidth_tests[target_key].get('bandwidth_mbps')
+                
+                # Fallback to synthetic hop data from aggregated metrics
+                total_hops = int(traceroute_data.get('total_hops', 0))
+                max_hop_latency = float(traceroute_data.get('max_hop_latency_ms', 0))
+                
+                hops = self._create_synthetic_hops(total_hops, max_hop_latency, target_location)
+                
+                # Add to topology analyzer
+                self.topology_analyzer.add_traceroute_data(
+                    source_location=source_location,
+                    target_location=target_location,
+                    hops=hops,
+                    bandwidth_mbps=bandwidth_mbps
+                )
+                
+                logger.debug(f"Updated topology with synthetic data: {source_location} -> {target_location} "
+                           f"(hops: {total_hops}, max_latency: {max_hop_latency}ms)")
+                
+        except Exception as e:
+            logger.error(f"Failed to update topology from metrics: {e}")
+    
+    def _create_synthetic_hops(self, total_hops: int, max_hop_latency: float, target_location: str) -> List[Dict]:
+        """Create synthetic hop data from aggregated metrics"""
+        if total_hops <= 0:
+            return []
+        
+        hops = []
+        # Distribute latency across hops, with max latency somewhere in the middle
+        max_hop_position = max(1, total_hops // 2)  # Put max latency in middle
+        
+        for i in range(total_hops):
+            if i == max_hop_position - 1:  # 0-indexed
+                latency = max_hop_latency
+            else:
+                # Distribute remaining latency across other hops
+                remaining_latency = max(0, max_hop_latency - 20)  # Reserve 20ms for max hop
+                latency = remaining_latency / max(1, total_hops - 1) if total_hops > 1 else 5
+                latency = max(1, latency)  # Minimum 1ms per hop
+            
+            hops.append({
+                'hop': i + 1,
+                'ip': f"hop_{target_location}_{i+1}",  # Synthetic IP
+                'latency_ms': round(latency, 2)
+            })
+        
+        return hops
+
+    async def get_network_topology(self, request):
+        """Get network topology analysis and visualization"""
+        try:
+            # Generate topology summary
+            summary = self.topology_analyzer.generate_topology_summary()
+            
+            # Get interactive topology data
+            topology_data = self.topology_analyzer.get_interactive_topology_data()
+            
+            # Find bottlenecks
+            bottlenecks = self.topology_analyzer.find_bottlenecks()
+            
+            return web.json_response({
+                'summary': summary,
+                'topology': topology_data,
+                'bottlenecks': bottlenecks,
+                'timestamp': time.time()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get network topology: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
+    async def get_topology_svg(self, request):
+        """Generate SVG visualization of network topology"""
+        try:
+            # Get optional size parameters
+            width = int(request.query.get('width', 12))
+            height = int(request.query.get('height', 8))
+            
+            # Generate SVG
+            svg_content = self.topology_analyzer.generate_topology_svg(width, height)
+            
+            return web.Response(
+                text=svg_content,
+                content_type='image/svg+xml',
+                headers={'Cache-Control': 'no-cache'}
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to generate topology SVG: {e}")
+            return web.Response(text=f"Error generating topology: {str(e)}", status=500)
+    
+    async def get_path_analysis(self, request):
+        """Get detailed path analysis between two locations"""
+        try:
+            source = request.query.get('source')
+            target = request.query.get('target')
+            
+            if not source or not target:
+                return web.json_response({
+                    'error': 'Missing required parameters: source and target'
+                }, status=400)
+            
+            analysis = self.topology_analyzer.get_path_analysis(source, target)
+            
+            return web.json_response({
+                'path_analysis': analysis,
+                'timestamp': time.time()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get path analysis: {e}")
+            return web.json_response({'error': str(e)}, status=500)
 
     async def get_member_metrics(self, request):
         """Return aggregated metrics from all reporting members"""
@@ -541,7 +766,13 @@ async def init_app(config_path: str):
     app.router.add_get('/members', registry.get_members)
     app.router.add_get('/members_with_analysis', registry.get_members_with_analysis)
     app.router.add_get('/health', registry.health_check)
+    app.router.add_post('/clear_redis', registry.clear_redis)  # POST for safety
     app.router.add_get('/metrics', registry.get_member_metrics)
+    
+    # Network topology endpoints
+    app.router.add_get('/topology', registry.get_network_topology)
+    app.router.add_get('/topology/svg', registry.get_topology_svg)
+    app.router.add_get('/topology/path', registry.get_path_analysis)
     
     # Static files for frontend
     import os
@@ -553,8 +784,20 @@ async def init_app(config_path: str):
     # Serve index.html at root
     app.router.add_get('/', serve_index)
     
-    # Serve static files
-    app.router.add_static('/static', static_dir, name='static')
+    # Custom static file handler with no-cache headers for development
+    async def serve_static(request):
+        file_path = request.match_info['filename']
+        full_path = os.path.join(static_dir, file_path)
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            response = web.FileResponse(full_path)
+            # Add no-cache headers for development
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
+        return web.Response(status=404)
+    
+    app.router.add_get('/static/{filename}', serve_static)
     
     # Start cleanup task
     asyncio.create_task(registry.cleanup_dead_members())

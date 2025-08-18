@@ -15,6 +15,7 @@ import aiohttp
 import yaml
 from aiohttp import web
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from version import get_cached_version
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -144,6 +145,9 @@ class NetringMember:
         self.task_health_monitor_interval = 60  # Check every minute
         self.task_timeout = 300  # 5 minutes before task considered dead
         self.running_tasks = {}  # Track running task objects
+        
+        # Store detailed traceroute hop data for topology analysis
+        self.detailed_traceroute_data = {}  # Format: {target_key: {'hops': [...], 'timestamp': ...}}
         
     def _get_advertise_ip(self) -> str:
         """Get the IP address to advertise to other members"""
@@ -543,6 +547,22 @@ class NetringMember:
                     target_ip=target_ip
                 ).set(traceroute_result['max_hop_latency'])
                 
+                # Store detailed hop data for topology analysis
+                target_key = f"{target_location}:{member_id}"
+                self.detailed_traceroute_data[target_key] = {
+                    'hops': traceroute_result['hops'],
+                    'timestamp': time.time(),
+                    'target_location': target_location,
+                    'target_ip': target_ip,
+                    'labels': {
+                        'source_location': self.location,
+                        'source_instance': self.instance_id,
+                        'target_location': target_location,
+                        'target_instance': member_id,
+                        'target_ip': target_ip
+                    }
+                }
+                
                 logger.info(f"Traceroute to {target_location} ({target_ip}): {traceroute_result['total_hops']} hops, max hop latency: {traceroute_result['max_hop_latency']:.2f}ms")
             else:
                 logger.warning(f"Traceroute to {target_location} ({target_ip}) failed")
@@ -668,6 +688,8 @@ class NetringMember:
         
         return web.json_response({
             'status': overall_status,
+            'version': get_cached_version(),
+            'component': 'member',
             'instance_id': self.instance_id,
             'location': self.location,
             'members_count': len(self.members),
@@ -747,6 +769,9 @@ class NetringMember:
             
             # Parse the metrics into our structured format
             parsed_metrics = self.parse_prometheus_metrics(metrics_output.decode('utf-8'))
+            
+            # Add detailed traceroute data for topology analysis
+            parsed_metrics['detailed_traceroute_data'] = self.detailed_traceroute_data.copy()
             
             # Send to registry
             async with self.session.post(

@@ -16,6 +16,10 @@ class NetringDashboard {
             showOfflineTargets: true
         };
         
+        // Topology state
+        this.topologyVisible = false;
+        this.topologyData = null;
+        
         this.init();
     }
 
@@ -36,10 +40,18 @@ class NetringDashboard {
         const metricToggles = document.querySelectorAll('.metric-toggle');
         metricToggles.forEach(toggle => {
             toggle.addEventListener('click', (e) => {
-                const metric = e.target.dataset.metric;
-                this.switchMetricView(metric);
+                // Check if this is the topology modal button
+                if (e.target.id === 'topologyModalBtn') {
+                    this.openTopologyModal();
+                } else {
+                    const metric = e.target.dataset.metric;
+                    this.switchMetricView(metric);
+                }
             });
         });
+
+        // Modal event listeners
+        this.setupModalEventListeners();
 
         // Filter controls
         this.setupFilterControls();
@@ -1033,9 +1045,23 @@ class NetringDashboard {
     switchMetricView(metric) {
         this.currentMetricView = metric;
         
+        // If topology is visible, hide it and show metrics
+        if (this.topologyVisible) {
+            this.topologyVisible = false;
+            const container = document.getElementById('topologyContainer');
+            const metricsContainer = document.getElementById('metricsContainer');
+            container.style.display = 'none';
+            metricsContainer.style.display = 'block';
+        }
+        
         // Update button states
         document.querySelectorAll('.metric-toggle').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.metric === metric);
+            if (btn.dataset.metric) {
+                btn.classList.toggle('active', btn.dataset.metric === metric);
+            } else {
+                // This is the topology button - remove active state
+                btn.classList.remove('active');
+            }
         });
         
         // Re-render metrics
@@ -1096,6 +1122,270 @@ class NetringDashboard {
             this.intervalId = null;
         }
     }
+
+    // Legacy topology methods removed - now using modal only
+
+    async clearRedisData() {
+        if (!confirm('Are you sure you want to clear all Redis data? This will remove all members, metrics, and topology data. This cannot be undone.')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch('/clear_redis', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            alert(`✅ Successfully cleared ${result.keys_deleted} Redis keys. Page will reload to reflect changes.`);
+            
+            // Reload the page to refresh all data
+            window.location.reload();
+            
+        } catch (error) {
+            console.error('Failed to clear Redis data:', error);
+            alert(`❌ Failed to clear Redis data: ${error.message}`);
+        }
+    }
+
+    async downloadTopologySvg() {
+        try {
+            const response = await fetch('/topology/svg?width=16&height=12');
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const svgContent = await response.text();
+            
+            // Create download link
+            const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `netring-topology-${new Date().toISOString().split('T')[0]}.svg`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            
+        } catch (error) {
+            console.error('Failed to download topology SVG:', error);
+            alert('Failed to download topology visualization');
+        }
+    }
+
+    setupModalEventListeners() {
+        const modal = document.getElementById('topologyModal');
+        const closeBtn = document.getElementById('closeModal');
+
+        // Close modal when clicking the X button
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                this.closeTopologyModal();
+            });
+        }
+
+        // Close modal when clicking outside the content
+        if (modal) {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    this.closeTopologyModal();
+                }
+            });
+        }
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.style.display === 'block') {
+                this.closeTopologyModal();
+            }
+        });
+    }
+
+    openTopologyModal() {
+        const modal = document.getElementById('topologyModal');
+        if (modal) {
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden'; // Prevent background scrolling
+            
+            // Load topology data into modal
+            this.loadTopologyIntoModal();
+        }
+    }
+
+    closeTopologyModal() {
+        const modal = document.getElementById('topologyModal');
+        if (modal) {
+            modal.style.display = 'none';
+            document.body.style.overflow = 'auto'; // Restore scrolling
+        }
+    }
+
+    async loadTopologyIntoModal() {
+        try {
+            // Fetch topology data
+            const response = await fetch('/topology');
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            // Update modal stats
+            this.updateModalTopologyStats(data.summary);
+            
+            // Update modal bottlenecks
+            this.updateModalBottlenecksList(data.bottlenecks);
+            
+            // Load SVG visualization
+            await this.loadModalTopologySvg();
+            
+        } catch (error) {
+            console.error('Failed to load topology data into modal:', error);
+            const modalVisualization = document.getElementById('modalTopologyVisualization');
+            if (modalVisualization) {
+                modalVisualization.innerHTML = `
+                    <div style="text-align: center; color: var(--accent-danger);">
+                        <p>⚠️ Failed to load topology data</p>
+                        <p style="font-size: 0.9rem; margin-top: 8px;">${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    updateModalTopologyStats(summary) {
+        const statsCards = document.querySelectorAll('#modalTopologyStats .modal-stat-card');
+        
+        if (statsCards.length >= 4) {
+            statsCards[0].querySelector('.modal-stat-value').textContent = summary.total_locations || 0;
+            statsCards[1].querySelector('.modal-stat-value').textContent = summary.total_routers || 0;
+            statsCards[2].querySelector('.modal-stat-value').textContent = summary.routes_analyzed || 0;
+            statsCards[3].querySelector('.modal-stat-value').textContent = summary.bottlenecks_found || 0;
+        }
+    }
+
+    updateModalBottlenecksList(bottlenecks) {
+        const bottlenecksList = document.getElementById('modalBottlenecksList');
+        if (!bottlenecksList) return;
+
+        if (!bottlenecks || bottlenecks.length === 0) {
+            bottlenecksList.innerHTML = '<span style="color: var(--accent-primary);">✅ No network bottlenecks detected</span>';
+            return;
+        }
+
+        const bottleneckItems = bottlenecks.map(bottleneck => {
+            let severity = '⚠️';
+            let color = 'var(--accent-warning)';
+            
+            if (bottleneck.severity === 'high') {
+                severity = '🔴';
+                color = 'var(--accent-danger)';
+            } else if (bottleneck.severity === 'critical') {
+                severity = '🚨';
+                color = 'var(--accent-danger)';
+            }
+            
+            return `
+                <div style="color: ${color}; margin: 8px 0; padding: 8px 12px; background: rgba(218, 54, 51, 0.1); border-radius: 6px; border-left: 3px solid ${color};">
+                    ${severity} <strong>${bottleneck.source}→${bottleneck.target}</strong> 
+                    ${bottleneck.latency}ms latency ${bottleneck.description}
+                </div>
+            `;
+        }).join('');
+
+        bottlenecksList.innerHTML = bottleneckItems;
+    }
+
+    async loadModalTopologySvg() {
+        try {
+            // Use larger dimensions for modal view
+            const response = await fetch('/topology/svg?width=20&height=15');
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const svgContent = await response.text();
+            const modalVisualization = document.getElementById('modalTopologyVisualization');
+            
+            if (modalVisualization) {
+                modalVisualization.innerHTML = svgContent;
+                
+                // Initialize zoom/pan for modal SVG
+                this.initializeModalZoomPan();
+            }
+            
+        } catch (error) {
+            console.error('Failed to load topology SVG into modal:', error);
+            const modalVisualization = document.getElementById('modalTopologyVisualization');
+            if (modalVisualization) {
+                modalVisualization.innerHTML = `
+                    <div style="text-align: center; color: var(--accent-danger);">
+                        <p>⚠️ Failed to load topology visualization</p>
+                        <p style="font-size: 0.9rem; margin-top: 8px;">${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    initializeModalZoomPan() {
+        const svg = document.querySelector('#modalTopologyVisualization svg');
+        if (!svg) return;
+        
+        let currentZoom = 1;
+        let isPanning = false;
+        let startPoint = {x: 0, y: 0};
+        let currentTranslate = {x: 0, y: 0};
+        
+        // Mouse events for panning
+        svg.addEventListener('mousedown', (evt) => {
+            isPanning = true;
+            const rect = svg.getBoundingClientRect();
+            startPoint.x = evt.clientX - rect.left - currentTranslate.x;
+            startPoint.y = evt.clientY - rect.top - currentTranslate.y;
+            svg.style.cursor = 'grabbing';
+        });
+        
+        svg.addEventListener('mousemove', (evt) => {
+            if (!isPanning) return;
+            
+            const rect = svg.getBoundingClientRect();
+            currentTranslate.x = evt.clientX - rect.left - startPoint.x;
+            currentTranslate.y = evt.clientY - rect.top - startPoint.y;
+            
+            svg.style.transform = `translate(${currentTranslate.x}px, ${currentTranslate.y}px) scale(${currentZoom})`;
+        });
+        
+        svg.addEventListener('mouseup', () => {
+            isPanning = false;
+            svg.style.cursor = 'grab';
+        });
+        
+        svg.addEventListener('mouseleave', () => {
+            isPanning = false;
+            svg.style.cursor = 'default';
+        });
+        
+        // Wheel event for zooming
+        svg.addEventListener('wheel', (evt) => {
+            evt.preventDefault();
+            
+            const delta = evt.deltaY > 0 ? 0.9 : 1.1;
+            currentZoom = Math.min(Math.max(0.1, currentZoom * delta), 5);
+            
+            svg.style.transform = `translate(${currentTranslate.x}px, ${currentTranslate.y}px) scale(${currentZoom})`;
+        });
+        
+        // Set initial cursor
+        svg.style.cursor = 'grab';
+    }
 }
 
 // Initialize dashboard when DOM is loaded
@@ -1114,5 +1404,25 @@ window.addEventListener('beforeunload', () => {
 function refreshData() {
     if (window.dashboard) {
         window.dashboard.refreshData();
+    }
+}
+
+// Legacy toggleTopology function removed - now using modal only
+
+function refreshTopology() {
+    if (window.dashboard) {
+        window.dashboard.loadTopologyIntoModal();
+    }
+}
+
+function downloadTopologySvg() {
+    if (window.dashboard) {
+        window.dashboard.downloadTopologySvg();
+    }
+}
+
+function clearRedisData() {
+    if (window.dashboard) {
+        window.dashboard.clearRedisData();
     }
 }

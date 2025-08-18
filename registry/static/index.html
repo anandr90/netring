@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Netring Registry Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=cleaned-up-final">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -78,6 +78,7 @@
                             <button class="metric-toggle" data-metric="http">HTTP</button>
                             <button class="metric-toggle" data-metric="bandwidth">Bandwidth</button>
                             <button class="metric-toggle" data-metric="traceroute">Traceroute</button>
+                            <button class="metric-toggle" id="topologyModalBtn">🌐 Topology</button>
                         </div>
                     </div>
                     <div class="filter-bar">
@@ -115,10 +116,63 @@
                             <p>Connectivity metrics will appear here when members start reporting data</p>
                         </div>
                     </div>
+                    
                     <div id="paginationContainer"></div>
                 </section>
             </div>
         </main>
+    </div>
+
+    <!-- Topology Modal -->
+    <div id="topologyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Network Topology - Full View</h2>
+                <div class="modal-controls">
+                    <button onclick="refreshTopology()" class="modal-btn refresh-btn">🔄 Refresh</button>
+                    <button onclick="downloadTopologySvg()" class="modal-btn download-btn">📥 Download SVG</button>
+                    <button onclick="clearRedisData()" class="modal-btn clear-btn">🗑️ Clear Data</button>
+                    <button class="modal-close" id="closeModal">&times;</button>
+                </div>
+            </div>
+            
+            <div class="modal-body">
+                <!-- Stats as proper cards -->
+                <div id="modalTopologyStats" class="modal-stats-grid">
+                    <div class="modal-stat-card">
+                        <div class="modal-stat-value">0</div>
+                        <div class="modal-stat-label">Locations</div>
+                    </div>
+                    <div class="modal-stat-card">
+                        <div class="modal-stat-value">0</div>
+                        <div class="modal-stat-label">Routers</div>
+                    </div>
+                    <div class="modal-stat-card">
+                        <div class="modal-stat-value">0</div>
+                        <div class="modal-stat-label">Routes</div>
+                    </div>
+                    <div class="modal-stat-card">
+                        <div class="modal-stat-value">0</div>
+                        <div class="modal-stat-label">Bottlenecks</div>
+                    </div>
+                </div>
+                
+                <!-- Network Insights -->
+                <div class="modal-insights-section">
+                    <h4>Network Insights</h4>
+                    <div id="modalBottlenecksList">
+                        ✅ No network bottlenecks detected
+                    </div>
+                </div>
+                
+                <!-- Main visualization content -->
+                <div class="modal-visualization-section">
+                    <div id="modalTopologyVisualization">
+                        No topology data available
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="/static/app.js"></script>
